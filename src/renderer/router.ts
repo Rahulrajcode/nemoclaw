@@ -93,4 +93,33 @@ export async function navigateToDashboard(config?: AppConfig | null): Promise<vo
 
 document.addEventListener('DOMContentLoaded', () => {
   initRouter()
+
+  // Listen for background loading failures
+  window.electronAPI.onStartupError((msg) => {
+    const root = getOcRoot()
+    hideLegacyUI()
+    
+    root.innerHTML = `
+      <div style="display:flex; height:100vh; width:100vw; align-items:center; justify-content:center; color:white; font-family: Inter, sans-serif; background:#0a0a0a; flex-direction:column;">
+        <div style="color:#ff4444; font-size:18px; font-weight:bold; margin-bottom:8px;">Startup Failed</div>
+        <div style="color:var(--oc-text-muted); font-size:14px; margin-bottom:24px;">${msg}</div>
+        <button id="btn-restart" style="padding: 10px 16px; background: white; color: black; border-radius: 6px; border: none; cursor: pointer; margin-bottom: 12px; width: 220px; font-weight:600;">Restart Service</button>
+        <button id="btn-logs" style="padding: 10px 16px; background: #222; color: white; border-radius: 6px; border: 1px solid #444; cursor: pointer; margin-bottom: 12px; width: 220px;">Open Logs</button>
+        <div style="margin-top: 16px; padding-top: 16px; border-top: 1px solid #333; width:220px; text-align:center;">
+          <button id="btn-reset" style="padding: 8px 16px; background: transparent; color: #ff4444; border-radius: 6px; border: 1px solid #ff4444; cursor: pointer; width: 100%; font-size:12px;">Reset Installation</button>
+        </div>
+      </div>
+    `
+    
+    document.getElementById('btn-restart')?.addEventListener('click', () => {
+       initRouter() // show the "Waking up openclaw..." spinner immediately
+       window.electronAPI.restartOpenClaw()
+    })
+    document.getElementById('btn-logs')?.addEventListener('click', () => {
+       window.electronAPI.openLogs()
+    })
+    document.getElementById('btn-reset')?.addEventListener('click', () => {
+       window.electronAPI.resetSetup()
+    })
+  })
 })

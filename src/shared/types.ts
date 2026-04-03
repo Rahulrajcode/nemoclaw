@@ -106,6 +106,12 @@ export interface ElectronAPI {
   removeBootstrapListeners: () => void
   retryDocker: () => Promise<void>
   openDockerDownload: () => Promise<void>
+
+  // Recovery APIs
+  onStartupError: (callback: (message: string) => void) => void
+  restartOpenClaw: () => Promise<void>
+  openLogs: () => Promise<void>
+  resetSetup: () => Promise<void>
 }
 
 declare global {

@@ -1,79 +1,72 @@
-import { spawn } from 'child_process'
-import * as http from 'http'
+import { spawn, ChildProcess } from 'child_process'
+
+let connectionProcess: ChildProcess | null = null
 
 /**
- * Silently runs `nemoclaw <sandbox> start`
+ * Runs `nemoclaw <sandbox> connect` to establish a port forward and parses the tokenized URL.
  */
-export async function startOpenclawService(sandboxName: string): Promise<boolean> {
-  console.log(`[OpenClaw] Silently starting sandbox: ${sandboxName}`)
-  return new Promise((resolve) => {
-    // We add ~/.local/bin and ~/.npm-global/bin to PATH in case they contain `nemoclaw`
-    const cmd = `export PATH="$HOME/.local/bin:$HOME/.npm-global/bin:$PATH" && nemoclaw ${sandboxName || 'open-coot-default'} start`
-    
-    const proc = spawn('bash', ['-l', '-c', cmd], { env: process.env })
-    
-    let errorOutput = ''
-    proc.stderr?.on('data', (data) => {
-      errorOutput += data.toString()
-    })
+function spawnConnection(sandboxName: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    if (connectionProcess) {
+      connectionProcess.kill()
+      connectionProcess = null
+    }
 
-    proc.stdout?.on('data', (data) => {
-      console.log(`[OpenClaw Start] ${data.toString().trim()}`)
-    })
+    const cmd = `export PATH="$HOME/.local/bin:$HOME/.npm-global/bin:$PATH" && nemoclaw ${sandboxName || 'open-coot-default'} connect`
+    console.log(`[OpenClaw] Spawning connection: ${cmd}`)
     
-    proc.on('close', (code) => {
-      if (code === 0) {
-        console.log(`[OpenClaw] Started successfully`)
-        resolve(true)
-      } else {
-        console.warn(`[OpenClaw] Start returned exit code: ${code}. It might already be running. Err: ${errorOutput}`)
-        // We still resolve true to allow polling to try
-        resolve(true)
+    connectionProcess = spawn('bash', ['-l', '-c', cmd], { env: process.env })
+    
+    let urlFound = false
+    const timeout = setTimeout(() => {
+      if (!urlFound) {
+        connectionProcess?.kill()
+        reject(new Error('Timed out waiting for OpenClaw connection URL.'))
+      }
+    }, 20000) // 20s timeout for port forwarding and token generation
+
+    connectionProcess.stdout?.on('data', (data) => {
+      const out = data.toString()
+      console.log(`[OpenClaw Connect] ${out.trim()}`)
+      
+      const match = out.match(/(http:\/\/127\.0\.0\.1:\d+\/#token=[a-zA-Z0-9]+)/)
+      if (match && !urlFound) {
+        urlFound = true
+        clearTimeout(timeout)
+        resolve(match[1])
       }
     })
-    
-    proc.on('error', (err) => {
-      console.error(`[OpenClaw] Failed to execute start command: ${err.message}`)
-      resolve(false)
+
+    connectionProcess.stderr?.on('data', (data) => {
+      console.error(`[OpenClaw Connect Err] ${data.toString().trim()}`)
+    })
+
+    connectionProcess.on('close', (code) => {
+      if (!urlFound) {
+        clearTimeout(timeout)
+        reject(new Error(`Connection process exited before URL was found (code ${code}).`))
+      }
     })
   })
 }
 
 /**
- * Polls the given URL with HTTP GETs until it receives a response or times out.
+ * Attempts to connect to OpenClaw. If it fails, retries once. 
+ * Resolves with the URL or null if all retries fail.
  */
-export async function pollOpenclawReady(url: string = 'http://localhost:3000', timeoutMs: number = 60000): Promise<boolean> {
-  const startTime = Date.now()
-  console.log(`[OpenClaw] Polling ${url} until ready...`)
-  
-  return new Promise((resolve) => {
-    const interval = setInterval(() => {
-      if (Date.now() - startTime > timeoutMs) {
-        clearInterval(interval)
-        console.error(`[OpenClaw] Polling timed out after ${timeoutMs}ms`)
-        resolve(false)
-        return
-      }
-
-      const req = http.get(url, (res) => {
-        // Any response across HTTP means the web interface is listening
-        clearInterval(interval)
-        console.log(`[OpenClaw] Service is ready! Response status: ${res.statusCode}`)
-        
-        // Consume response data to free up memory
-        res.on('data', () => {})
-        res.on('end', () => resolve(true))
-      })
-
-      req.on('error', (_err) => {
-        // Ignoring expected Connection Refused errors during startup
-      })
-      
-      req.setTimeout(2000, () => {
-        req.destroy()
-      })
-      
-      req.end()
-    }, 1500)
-  })
+export async function getOpenClawUrl(sandboxName: string): Promise<string | null> {
+  try {
+    console.log('[OpenClaw] Attempt 1/2: Connecting to sandbox...')
+    return await spawnConnection(sandboxName)
+  } catch (err) {
+    console.warn(`[OpenClaw] Attempt 1 failed: ${(err as Error).message}. Retrying...`)
+    try {
+      console.log('[OpenClaw] Attempt 2/2: Retrying connection...')
+      return await spawnConnection(sandboxName)
+    } catch (retryErr) {
+      console.error(`[OpenClaw] Attempt 2 failed: ${(retryErr as Error).message}.`)
+      return null
+    }
+  }
 }
+

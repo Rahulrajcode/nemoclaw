@@ -1,7 +1,8 @@
-import { ipcMain, shell, BrowserWindow } from 'electron'
+import { app, ipcMain, shell, BrowserWindow } from 'electron'
 import { spawn, ChildProcess } from 'child_process'
 import { runSystemChecks } from './system-checks'
 import type { InstallConfig, InstallOutputEvent, InstallCompleteEvent } from '../shared/types'
+import { getConfig, saveConfig } from './config-service'
 import * as https from 'https'
 import * as http from 'http'
 
@@ -296,5 +297,26 @@ export function registerIpcHandlers(getMainWindow: () => BrowserWindow | null): 
       win.webContents.removeAllListeners('install-output')
       win.webContents.removeAllListeners('install-complete')
     }
+  })
+
+  // ── Recovery Handlers ───────────────────────────────────────────────────
+  ipcMain.handle('restart-openclaw', () => {
+    app.relaunch()
+    app.exit()
+  })
+
+  ipcMain.handle('reset-setup', () => {
+    saveConfig({ setupComplete: false })
+    app.relaunch()
+    app.exit()
+  })
+
+  ipcMain.handle('open-logs', () => {
+    const config = getConfig()
+    const sandboxName = config?.sandboxName || 'open-coot-default'
+    // On macOS, this opens a new Terminal window running the logs command
+    const cmd = `export PATH="$HOME/.local/bin:$HOME/.npm-global/bin:$PATH"; nemoclaw ${sandboxName} logs --follow`
+    const appleScript = `tell application "Terminal" to do script "${cmd}"`
+    spawn('osascript', ['-e', appleScript])
   })
 }

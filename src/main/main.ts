@@ -3,7 +3,7 @@ import { join } from 'path'
 import { registerIpcHandlers } from './ipc-handlers'
 import { registerConfigHandlers, isFirstLaunch, getConfig } from './config-service'
 import { runMacBootstrap } from './mac-bootstrap'
-import { startOpenclawService, pollOpenclawReady } from './openclaw-service'
+import { getOpenClawUrl } from './openclaw-service'
 
 let mainWindow: BrowserWindow | null = null
 
@@ -63,20 +63,20 @@ app.whenReady().then(async () => {
       })
     } else {
       // Subsequent launch: start OpenClaw silently and load it
+      console.log('[Main] Running subsequent launch sequence...')
       const config = getConfig()
       const sandboxName = config?.sandboxName || 'open-coot-default'
       
-      startOpenclawService(sandboxName).then(() => {
-        return pollOpenclawReady('http://localhost:3000', 60000)
-      }).then((isReady) => {
-        if (isReady && mainWindow) {
-          mainWindow.loadURL('http://localhost:3000')
+      getOpenClawUrl(sandboxName).then((url) => {
+        if (url && mainWindow) {
+          mainWindow.loadURL(url)
         } else if (mainWindow) {
-          // If polling fails, send an event or simply let the fallback UI show
+          // If polling fails, send an event to render the Recovery UI
           mainWindow.webContents.send('startup-error', 'OpenClaw service failed to start or respond.')
         }
       }).catch(err => {
         console.error('[Main] Error starting OpenClaw:', err)
+        mainWindow?.webContents.send('startup-error', (err as Error).message)
       })
     }
   }

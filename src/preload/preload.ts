@@ -65,8 +65,15 @@ const api: ElectronAPI = {
   },
 
   retryDocker: () => ipcRenderer.invoke('retry-docker'),
+  openDockerDownload: () => ipcRenderer.invoke('open-docker-download'),
 
-  openDockerDownload: () => ipcRenderer.invoke('open-docker-download')
+  // ── Recovery APIs ───────────────────────────────────────────────────────
+  onStartupError: (callback: (message: string) => void) => {
+    ipcRenderer.on('startup-error', (_event, message: string) => callback(message))
+  },
+  restartOpenClaw: () => ipcRenderer.invoke('restart-openclaw'),
+  openLogs: () => ipcRenderer.invoke('open-logs'),
+  resetSetup: () => ipcRenderer.invoke('reset-setup')
 }
 
 contextBridge.exposeInMainWorld('electronAPI', api)

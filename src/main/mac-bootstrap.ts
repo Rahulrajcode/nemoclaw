@@ -5,7 +5,7 @@ import { writeFileSync, mkdirSync, existsSync } from 'fs'
 import { join } from 'path'
 import type { BootstrapEvent, BootstrapStage } from '../shared/types'
 import { saveConfig } from './config-service'
-import { pollOpenclawReady } from './openclaw-service'
+import { getOpenClawUrl } from './openclaw-service'
 
 function startOllamaDetached(): void {
   const proc = spawn('ollama', ['serve'], { detached: true, stdio: 'ignore' })
@@ -511,13 +511,13 @@ export async function runMacBootstrap(win: BrowserWindow): Promise<void> {
     saveConfig({ setupComplete: true })
 
     sendBootstrap(win, 'complete', 'running', 'Waiting for OpenClaw UI to start...', 99)
-    const isReady = await pollOpenclawReady('http://localhost:3000', 60000)
+    const url = await getOpenClawUrl('open-coot-default')
     
-    if (isReady) {
+    if (url) {
       sendBootstrap(win, 'complete', 'done', 'OpenClaw is ready. Loading...', 100)
       // Small timeout to let the UI show complete status briefly
       setTimeout(() => {
-        win.loadURL('http://localhost:3000')
+        win.loadURL(url)
       }, 500)
     } else {
       sendBootstrap(win, 'error', 'error', 'OpenClaw service failed to respond in time.', 100)
