@@ -50,14 +50,17 @@ function runShell(cmd: string, env?: Record<string, string>): Promise<{ code: nu
   })
 }
 
-function runShellLong(cmd: string, win: BrowserWindow, stage: BootstrapStage, env?: Record<string, string>): Promise<number> {
+function runShellLong(cmd: string, win: BrowserWindow, stage: BootstrapStage, env?: Record<string, string>): Promise<{ code: number, stdout: string }> {
   return new Promise((resolve, reject) => {
     const fullEnv = { ...process.env, ...env }
     const proc = spawn('bash', ['-l', '-c', cmd], { shell: false, env: fullEnv })
     proc.stdin?.end()
 
+    let fullStdout = ''
     proc.stdout?.on('data', (data: Buffer) => {
-      const lines = data.toString().split('\n').filter((l: string) => l.trim())
+      const outStr = data.toString()
+      fullStdout += outStr
+      const lines = outStr.split('\n').filter((l: string) => l.trim())
       for (const line of lines) {
         console.log(`[bootstrap:${stage}] ${line}`)
       }
@@ -79,7 +82,7 @@ function runShellLong(cmd: string, win: BrowserWindow, stage: BootstrapStage, en
     proc.on('exit', (code) => {
       clearTimeout(timeout)
       // Small delay to ensure stdout has time to flush
-      setTimeout(() => resolve(code ?? 1), 50)
+      setTimeout(() => resolve({ code: code ?? 1, stdout: fullStdout }), 50)
     })
 
     proc.on('error', (err) => {
@@ -120,7 +123,7 @@ async function installNemoclaw(win: BrowserWindow): Promise<boolean> {
   sendBootstrap(win, 'nemoclaw-install', 'running', 'Installing NemoClaw...', 20)
 
   try {
-    const code = await runShellLong(
+    const result = await runShellLong(
       'curl -fsSL https://www.nvidia.com/nemoclaw.sh | bash',
       win,
       'nemoclaw-install',
@@ -130,11 +133,11 @@ async function installNemoclaw(win: BrowserWindow): Promise<boolean> {
       }
     )
 
-    if (code === 0) {
+    if (result.code === 0) {
       sendBootstrap(win, 'nemoclaw-install', 'done', 'NemoClaw installed ✓', 25)
       return true
     } else {
-      sendBootstrap(win, 'nemoclaw-install', 'error', `NemoClaw installation failed (exit ${code})`, 25)
+      sendBootstrap(win, 'nemoclaw-install', 'error', `NemoClaw installation failed (exit ${result.code})`, 25)
       return false
     }
   } catch (err) {
@@ -147,13 +150,13 @@ async function installOpenShell(win: BrowserWindow): Promise<boolean> {
   sendBootstrap(win, 'nemoclaw-install', 'running', 'Pre-installing OpenShell...', 23)
 
   try {
-    const code = await runShellLong(
+    const result = await runShellLong(
       'mkdir -p ~/.npm-global/bin ~/.local/bin && export PATH="$HOME/.local/bin:$HOME/.npm-global/bin:$PATH" && curl -LsSf https://raw.githubusercontent.com/NVIDIA/OpenShell/main/install.sh | sh',
       win,
       'nemoclaw-install'
     )
 
-    if (code === 0) {
+    if (result.code === 0) {
       return true
     } else {
       console.error('[bootstrap] OpenShell installation failed')
@@ -214,17 +217,17 @@ async function installOllama(win: BrowserWindow): Promise<boolean> {
   sendBootstrap(win, 'ollama-install', 'running', 'Installing Ollama...', 50)
 
   try {
-    const code = await runShellLong(
+    const result = await runShellLong(
       'curl -fsSL https://ollama.com/install.sh | sh',
       win,
       'ollama-install'
     )
 
-    if (code === 0) {
+    if (result.code === 0) {
       sendBootstrap(win, 'ollama-install', 'done', 'Ollama installed ✓', 55)
       return true
     } else {
-      sendBootstrap(win, 'ollama-install', 'error', `Ollama installation failed (exit ${code})`, 55)
+      sendBootstrap(win, 'ollama-install', 'error', `Ollama installation failed (exit ${result.code})`, 55)
       return false
     }
   } catch (err) {
@@ -322,13 +325,13 @@ async function pullModel(win: BrowserWindow): Promise<boolean> {
   sendBootstrap(win, 'model-pull', 'running', 'Downloading llama3:8b model (this may take a few minutes)...', 65)
 
   try {
-    const code = await runShellLong('ollama pull llama3:8b', win, 'model-pull')
+    const result = await runShellLong('ollama pull llama3:8b', win, 'model-pull')
 
-    if (code === 0) {
+    if (result.code === 0) {
       sendBootstrap(win, 'model-pull', 'done', 'Model llama3:8b ready ✓', 80)
       return true
     } else {
-      sendBootstrap(win, 'model-pull', 'error', `Model pull failed (exit ${code})`, 80)
+      sendBootstrap(win, 'model-pull', 'error', `Model pull failed (exit ${result.code})`, 80)
       return false
     }
   } catch (err) {
@@ -337,7 +340,7 @@ async function pullModel(win: BrowserWindow): Promise<boolean> {
   }
 }
 
-async function createSandbox(win: BrowserWindow): Promise<boolean> {
+async function createSandbox(win: BrowserWindow): Promise<string | null> {
   sendBootstrap(win, 'sandbox-create', 'running', 'Creating sandbox...', 85)
 
   try {
@@ -346,7 +349,7 @@ async function createSandbox(win: BrowserWindow): Promise<boolean> {
     const askPassScript = `#!/bin/bash\nosascript -e 'tell application "SystemUIServer" to activate' -e 'tell application "SystemUIServer" to display dialog "Open-Coot requires administrator privileges to configure isolated sandbox networking (CoreDNS/Docker)." default answer "" with hidden answer with title "Authentication Required"' -e 'text returned of result'\n`
     writeFileSync(askPassPath, askPassScript, { mode: 0o755, encoding: 'utf-8' })
 
-    const code = await runShellLong(
+    const result = await runShellLong(
       `export SUDO_ASKPASS="${askPassPath}" && sudo -A -v && export PATH="$HOME/.local/bin:$HOME/.npm-global/bin:$PATH" && nemoclaw onboard --non-interactive`,
       win,
       'sandbox-create',
@@ -358,16 +361,17 @@ async function createSandbox(win: BrowserWindow): Promise<boolean> {
       }
     )
 
-    if (code === 0) {
+    if (result.code === 0) {
       sendBootstrap(win, 'sandbox-create', 'done', 'Sandbox "open-coot-default" created ✓', 95)
-      return true
+      const match = result.stdout.match(/(http:\/\/127\.0\.0\.1:\d+\/#token=[a-zA-Z0-9]+)/)
+      return match ? match[1] : null
     } else {
-      sendBootstrap(win, 'sandbox-create', 'error', `Sandbox creation failed (exit ${code})`, 95)
-      return false
+      sendBootstrap(win, 'sandbox-create', 'error', `Sandbox creation failed (exit ${result.code})`, 95)
+      return null
     }
   } catch (err) {
     sendBootstrap(win, 'sandbox-create', 'error', `Sandbox error: ${(err as Error).message}`, 95)
-    return false
+    return null
   }
 }
 
@@ -492,9 +496,9 @@ export async function runMacBootstrap(win: BrowserWindow): Promise<void> {
     }
 
     // Step 8: Create sandbox
-    const sandboxCreated = await createSandbox(win)
-    if (!sandboxCreated) {
-      sendBootstrap(win, 'error', 'error', 'Failed to create sandbox.', 95)
+    const sandboxUrl = await createSandbox(win)
+    if (!sandboxUrl) {
+      sendBootstrap(win, 'error', 'error', 'Failed to create sandbox or extract URL.', 95)
       win.webContents.send('bootstrap-complete', false)
       return
     }
@@ -510,19 +514,11 @@ export async function runMacBootstrap(win: BrowserWindow): Promise<void> {
     sendBootstrap(win, 'sandbox-create', 'done', 'Sandbox verified ✓', 98)
     saveConfig({ setupComplete: true })
 
-    sendBootstrap(win, 'complete', 'running', 'Waiting for OpenClaw UI to start...', 99)
-    const url = await getOpenClawUrl('open-coot-default')
-    
-    if (url) {
-      sendBootstrap(win, 'complete', 'done', 'OpenClaw is ready. Loading...', 100)
-      // Small timeout to let the UI show complete status briefly
-      setTimeout(() => {
-        win.loadURL(url)
-      }, 500)
-    } else {
-      sendBootstrap(win, 'error', 'error', 'OpenClaw service failed to respond in time.', 100)
-      win.webContents.send('bootstrap-complete', false)
-    }
+    sendBootstrap(win, 'complete', 'done', 'OpenClaw is ready. Loading...', 100)
+    // Small timeout to let the UI show complete status briefly
+    setTimeout(() => {
+      win.loadURL(sandboxUrl)
+    }, 500)
 
   } catch (err) {
     console.error('[bootstrap] Fatal error:', err)
