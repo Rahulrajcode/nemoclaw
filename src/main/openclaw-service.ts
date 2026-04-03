@@ -100,10 +100,14 @@ function spawnConnection(sandboxName: string): Promise<string> {
       connectionProcess = null
     }
 
-    const cmd = `export PATH="$HOME/.local/bin:$HOME/.npm-global/bin:$PATH" && nemoclaw ${sandboxName || 'open-coot-default'} connect`
-    console.log(`[OpenClaw] Spawning connection: ${cmd}`)
+    const innerCmd = `export PATH="$HOME/.local/bin:$HOME/.npm-global/bin:$PATH" && nemoclaw ${sandboxName || 'open-coot-default'} connect`
+    // Wrap in `script` to force a pseudo-TTY — many CLI tools suppress output without a TTY
+    const cmd = `script -q /dev/null bash -l -c '${innerCmd}'`
+    console.log(`[OpenClaw] Spawning connection (with PTY): ${innerCmd}`)
     
-    connectionProcess = spawn('bash', ['-l', '-c', cmd], { env: process.env })
+    connectionProcess = spawn('bash', ['-c', cmd], { env: process.env })
+    // Close stdin immediately — we don't need interactive input
+    connectionProcess.stdin?.end()
     
     let urlFound = false
     let bestUrl: string | null = null
