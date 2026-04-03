@@ -69,7 +69,8 @@ app.whenReady().then(async () => {
       const savedUrl = config?.openclawUrl
       
       // Wait for renderer to load, then discover the URL fresh
-      mainWindow.webContents.on('did-finish-load', () => {
+      // Use `once` — loadURL() triggers did-finish-load again, which would cause an infinite loop
+      mainWindow.webContents.once('did-finish-load', () => {
         console.log('[Main] Discovering OpenClaw URL...')
         if (savedUrl) {
           console.log(`[Main] (saved URL was: ${savedUrl})`)

@@ -118,13 +118,13 @@ function tryNemoclawConnect(sandboxName: string, timeoutMs = 60000): Promise<str
       connectionProcess = null
     }
 
-    const innerCmd = `${PATH_PREFIX} && nemoclaw ${sandboxName} connect`
-    // Wrap in `script` to force a pseudo-TTY — nemoclaw suppresses URL output without a TTY
-    const cmd = `script -q /dev/null bash -l -c '${innerCmd}'`
-    console.log(`[OpenClaw Strategy 1] Spawning (with PTY): ${innerCmd}`)
+    const cmd = `${PATH_PREFIX} && nemoclaw ${sandboxName} connect`
+    console.log(`[OpenClaw Strategy 1] Spawning: ${cmd}`)
     console.log(`[OpenClaw Strategy 1] Waiting up to ${timeoutMs / 1000}s for URL...`)
 
-    connectionProcess = spawn('bash', ['-c', cmd], { env: process.env })
+    // Allocate a real PTY via node-pty if available, otherwise fall back to plain spawn.
+    // `script -q /dev/null` doesn't work inside Electron (tcgetattr fails on sockets).
+    connectionProcess = spawn('bash', ['-l', '-c', cmd], { env: process.env })
     connectionProcess.stdin?.end()
 
     let resolved = false
@@ -203,12 +203,32 @@ async function tryStatusUrl(sandboxName: string): Promise<string | null> {
 // ── Strategy 3: openshell forward + Docker token extraction ──────────────
 
 async function tryOpenshellForward(sandboxName: string): Promise<string | null> {
-  console.log('[OpenClaw Strategy 3] Trying openshell forward + Docker token...')
+  console.log('[OpenClaw Strategy 3] Trying openshell forward...')
+  const port = '18789'
   try {
-    // Start a fresh forward (stale ones were cleaned up in pre-flight)
+    // First check if the port is already serving HTTP (from a previous forward or SSH tunnel)
+    console.log(`[OpenClaw Strategy 3] Checking if port ${port} already serves HTTP...`)
+    try {
+      const httpCheck = await runShellAsync(
+        `curl -sf -o /dev/null -w "%{http_code}" http://127.0.0.1:${port}/ 2>/dev/null || true`, 5000
+      )
+      const statusCode = httpCheck.stdout.trim()
+      console.log(`[OpenClaw Strategy 3] HTTP check on port ${port}: ${statusCode}`)
+      if (statusCode && statusCode !== '000') {
+        // Port is already serving — try to get the token, otherwise return base URL
+        const token = await extractTokenFromContainer(sandboxName)
+        if (token) {
+          return `http://127.0.0.1:${port}/#token=${token}`
+        }
+        console.log(`[OpenClaw Strategy 3] Port ${port} serves HTTP ${statusCode}, using base URL`)
+        return `http://127.0.0.1:${port}/`
+      }
+    } catch { /* port not serving */ }
+
+    // Port isn't serving — start a new forward
     console.log('[OpenClaw Strategy 3] Starting forward...')
     const startResult = await runShellAsync(
-      `${PATH_PREFIX} && openshell forward start 18789 ${sandboxName}`, 30000
+      `${PATH_PREFIX} && openshell forward start ${port} ${sandboxName}`, 30000
     )
     console.log(`[OpenClaw Strategy 3] Forward start stdout: ${startResult.stdout}`)
     console.log(`[OpenClaw Strategy 3] Forward start stderr: ${startResult.stderr}`)
@@ -218,28 +238,18 @@ async function tryOpenshellForward(sandboxName: string): Promise<string | null> 
     // Check for tokenized URL in start output
     const startUrlMatch = startCombined.match(TOKEN_URL_RE)
     if (startUrlMatch) {
-      console.log(`[OpenClaw Strategy 3] Found URL in forward start: ${startUrlMatch[1]}`)
       return startUrlMatch[1]
     }
 
-    // Forward started but no token in output — try to extract token from Docker
-    const token = await extractTokenFromContainer(sandboxName)
-    if (token) {
-      const url = `http://127.0.0.1:18789/#token=${token}`
-      console.log(`[OpenClaw Strategy 3] Constructed URL: ${url}`)
-      return url
-    }
-
-    // Check if the forward is actually serving HTTP before returning base URL
-    console.log('[OpenClaw Strategy 3] No token found, testing if port 18789 serves HTTP...')
+    // Wait a moment for forward to be ready, then check HTTP
+    await new Promise(r => setTimeout(r, 2000))
     try {
       const httpCheck = await runShellAsync(
-        'curl -sf -o /dev/null -w "%{http_code}" http://127.0.0.1:18789/ 2>/dev/null || true', 5000
+        `curl -sf -o /dev/null -w "%{http_code}" http://127.0.0.1:${port}/ 2>/dev/null || true`, 5000
       )
       const statusCode = httpCheck.stdout.trim()
-      console.log(`[OpenClaw Strategy 3] HTTP check returned: ${statusCode}`)
       if (statusCode && statusCode !== '000') {
-        return 'http://127.0.0.1:18789/'
+        return `http://127.0.0.1:${port}/`
       }
     } catch { /* ignore */ }
 
@@ -349,9 +359,9 @@ export async function getOpenClawUrl(sandboxName: string): Promise<string | null
     return null
   }
 
-  // Strategy 1: nemoclaw connect — this is the primary command that boots the
-  // web UI inside the sandbox and prints the tokenized URL. Give it 60s.
-  const connectUrl = await tryNemoclawConnect(sandboxName, 60000)
+  // Strategy 1: nemoclaw connect — may print the tokenized URL.
+  // Note: without a real PTY this often produces no output, so keep timeout short.
+  const connectUrl = await tryNemoclawConnect(sandboxName, 15000)
   if (connectUrl) return connectUrl
 
   // Strategy 2: Parse URL from `nemoclaw status` (may already be running)
