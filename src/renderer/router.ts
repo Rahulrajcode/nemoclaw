@@ -2,8 +2,8 @@
  * Router — Decides which UI flow to show based on platform and config state.
  *
  * macOS (darwin):
- *   First launch  → Bootstrap loading screen → Onboarding (4 steps) → Dashboard
- *   Return launch → Dashboard immediately
+ *   First launch  → Bootstrap loading screen → Loads OpenClaw via Main Process
+ *   Return launch → Simple Loading screen → Loads OpenClaw via Main Process
  *
  * Windows / Linux:
  *   Always → Existing 6-step wizard installer (app.ts)
@@ -27,10 +27,15 @@ export async function initRouter(): Promise<void> {
   const config = await window.electronAPI.getConfig()
 
   if (config && config.setupComplete) {
-    // Return launch — load dashboard directly
+    // Return launch — main process will handle starting/polling OpenClaw
     hideLegacyUI()
-    const { renderDashboard } = await import('./dashboard-view')
-    renderDashboard(getOcRoot(), config)
+    const root = getOcRoot()
+    root.innerHTML = `
+      <div style="display:flex; height:100vh; width:100vw; align-items:center; justify-content:center; color:white; font-family: Inter, sans-serif; background:#0a0a0a; flex-direction:column;">
+        <div class="oc-spinner" style="margin-bottom:16px;"></div>
+        <div style="color:var(--oc-text-muted); font-size:14px;">Waking up OpenClaw...</div>
+      </div>
+    `
   } else {
     // First launch — show bootstrap screen, main process will send events
     hideLegacyUI()
@@ -74,17 +79,14 @@ function loadWizardInstaller(): void {
   import('./app')
 }
 
-// ── Navigation helpers (called from views) ──────────────────────────────────
+// ── Navigation helpers (legacy) ─────────────────────────────────────────────
 
 export async function navigateToOnboarding(): Promise<void> {
-  const { renderOnboarding } = await import('./onboarding-view')
-  renderOnboarding(getOcRoot())
+  // Deprecated: Main process loads OpenClaw directly
 }
 
 export async function navigateToDashboard(config?: AppConfig | null): Promise<void> {
-  const resolved = config || await window.electronAPI.getConfig()
-  const { renderDashboard } = await import('./dashboard-view')
-  renderDashboard(getOcRoot(), resolved)
+  // Deprecated: Main process loads OpenClaw directly
 }
 
 // ── Init ────────────────────────────────────────────────────────────────────

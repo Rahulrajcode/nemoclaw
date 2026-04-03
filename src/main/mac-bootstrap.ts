@@ -4,6 +4,8 @@ import * as os from 'os'
 import { writeFileSync, mkdirSync, existsSync } from 'fs'
 import { join } from 'path'
 import type { BootstrapEvent, BootstrapStage } from '../shared/types'
+import { saveConfig } from './config-service'
+import { pollOpenclawReady } from './openclaw-service'
 
 function startOllamaDetached(): void {
   const proc = spawn('ollama', ['serve'], { detached: true, stdio: 'ignore' })
@@ -505,8 +507,22 @@ export async function runMacBootstrap(win: BrowserWindow): Promise<void> {
     }
 
     // Done!
-    sendBootstrap(win, 'complete', 'done', 'Bootstrap complete — launching onboarding...', 100)
-    win.webContents.send('bootstrap-complete', true)
+    sendBootstrap(win, 'sandbox-create', 'done', 'Sandbox verified ✓', 98)
+    saveConfig({ setupComplete: true })
+
+    sendBootstrap(win, 'complete', 'running', 'Waiting for OpenClaw UI to start...', 99)
+    const isReady = await pollOpenclawReady('http://localhost:3000', 60000)
+    
+    if (isReady) {
+      sendBootstrap(win, 'complete', 'done', 'OpenClaw is ready. Loading...', 100)
+      // Small timeout to let the UI show complete status briefly
+      setTimeout(() => {
+        win.loadURL('http://localhost:3000')
+      }, 500)
+    } else {
+      sendBootstrap(win, 'error', 'error', 'OpenClaw service failed to respond in time.', 100)
+      win.webContents.send('bootstrap-complete', false)
+    }
 
   } catch (err) {
     console.error('[bootstrap] Fatal error:', err)

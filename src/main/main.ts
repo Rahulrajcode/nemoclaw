@@ -1,8 +1,9 @@
 import { app, BrowserWindow, Menu } from 'electron'
 import { join } from 'path'
 import { registerIpcHandlers } from './ipc-handlers'
-import { registerConfigHandlers, isFirstLaunch } from './config-service'
+import { registerConfigHandlers, isFirstLaunch, getConfig } from './config-service'
 import { runMacBootstrap } from './mac-bootstrap'
+import { startOpenclawService, pollOpenclawReady } from './openclaw-service'
 
 let mainWindow: BrowserWindow | null = null
 
@@ -59,6 +60,23 @@ app.whenReady().then(async () => {
         setTimeout(() => {
           if (mainWindow) runMacBootstrap(mainWindow)
         }, 500)
+      })
+    } else {
+      // Subsequent launch: start OpenClaw silently and load it
+      const config = getConfig()
+      const sandboxName = config?.sandboxName || 'open-coot-default'
+      
+      startOpenclawService(sandboxName).then(() => {
+        return pollOpenclawReady('http://localhost:3000', 60000)
+      }).then((isReady) => {
+        if (isReady && mainWindow) {
+          mainWindow.loadURL('http://localhost:3000')
+        } else if (mainWindow) {
+          // If polling fails, send an event or simply let the fallback UI show
+          mainWindow.webContents.send('startup-error', 'OpenClaw service failed to start or respond.')
+        }
+      }).catch(err => {
+        console.error('[Main] Error starting OpenClaw:', err)
       })
     }
   }
