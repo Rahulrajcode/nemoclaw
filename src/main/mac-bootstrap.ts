@@ -512,7 +512,7 @@ export async function runMacBootstrap(win: BrowserWindow): Promise<void> {
 
     // Done!
     sendBootstrap(win, 'sandbox-create', 'done', 'Sandbox verified ✓', 98)
-    saveConfig({ setupComplete: true })
+    saveConfig({ setupComplete: true, openclawUrl: sandboxUrl })
 
     sendBootstrap(win, 'complete', 'done', 'OpenClaw is ready. Loading...', 100)
     // Small timeout to let the UI show complete status briefly

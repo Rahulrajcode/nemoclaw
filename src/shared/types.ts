@@ -37,6 +37,7 @@ export interface InstallCompleteEvent {
 
 export interface AppConfig {
   setupComplete: boolean
+  openclawUrl?: string  // Tokenized URL from first install, e.g. http://127.0.0.1:18789/#token=...
   workspaceType: string
   tools: string[]
   teamSize: string

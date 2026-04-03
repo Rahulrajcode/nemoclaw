@@ -1,7 +1,7 @@
 import { app, BrowserWindow, Menu } from 'electron'
 import { join } from 'path'
 import { registerIpcHandlers } from './ipc-handlers'
-import { registerConfigHandlers, isFirstLaunch, getConfig } from './config-service'
+import { registerConfigHandlers, isFirstLaunch, getConfig, saveConfig } from './config-service'
 import { runMacBootstrap } from './mac-bootstrap'
 import { getOpenClawUrl } from './openclaw-service'
 
@@ -62,22 +62,38 @@ app.whenReady().then(async () => {
         }, 500)
       })
     } else {
-      // Subsequent launch: start OpenClaw silently and load it
+      // Subsequent launch: load OpenClaw directly using saved URL
       console.log('[Main] Running subsequent launch sequence...')
       const config = getConfig()
       const sandboxName = config?.sandboxName || 'open-coot-default'
+      const savedUrl = config?.openclawUrl
       
-      getOpenClawUrl(sandboxName).then((url) => {
-        if (url && mainWindow) {
-          mainWindow.loadURL(url)
-        } else if (mainWindow) {
-          // If polling fails, send an event to render the Recovery UI
-          mainWindow.webContents.send('startup-error', 'OpenClaw service failed to start or respond.')
+      if (savedUrl) {
+        // Fast path: use the saved tokenized URL from first install
+        console.log(`[Main] Using saved URL: ${savedUrl}`)
+        if (mainWindow) {
+          mainWindow.webContents.on('did-finish-load', () => {
+            // Wait briefly for the "Waking up" screen to show, then navigate
+            setTimeout(() => {
+              if (mainWindow) mainWindow.loadURL(savedUrl)
+            }, 300)
+          })
         }
-      }).catch(err => {
-        console.error('[Main] Error starting OpenClaw:', err)
-        mainWindow?.webContents.send('startup-error', (err as Error).message)
-      })
+      } else {
+        // Fallback: try to discover the URL dynamically
+        console.log('[Main] No saved URL found, trying discovery...')
+        getOpenClawUrl(sandboxName).then((url) => {
+          if (url && mainWindow) {
+            saveConfig({ openclawUrl: url })
+            mainWindow.loadURL(url)
+          } else if (mainWindow) {
+            mainWindow.webContents.send('startup-error', 'OpenClaw service failed to start or respond.')
+          }
+        }).catch(err => {
+          console.error('[Main] Error starting OpenClaw:', err)
+          mainWindow?.webContents.send('startup-error', (err as Error).message)
+        })
+      }
     }
   }
 
