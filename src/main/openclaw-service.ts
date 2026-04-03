@@ -264,7 +264,7 @@ async function tryOpenshellForward(sandboxName: string): Promise<string | null> 
 /**
  * Try to extract the OpenClaw authentication token from the sandbox Docker container.
  */
-async function extractTokenFromContainer(sandboxName: string): Promise<string | null> {
+export async function extractTokenFromContainer(sandboxName: string): Promise<string | null> {
   console.log('[OpenClaw Token] Attempting to extract token from container...')
 
   const containerPatterns = [sandboxName, 'openclaw', 'nemoclaw', 'open-coot']
@@ -360,8 +360,8 @@ export async function getOpenClawUrl(sandboxName: string): Promise<string | null
   }
 
   // Strategy 1: nemoclaw connect — may print the tokenized URL.
-  // Note: without a real PTY this often produces no output, so keep timeout short.
-  const connectUrl = await tryNemoclawConnect(sandboxName, 15000)
+  // Give it a full 60s — the service can be slow to start, especially on first run.
+  const connectUrl = await tryNemoclawConnect(sandboxName, 60000)
   if (connectUrl) return connectUrl
 
   // Strategy 2: Parse URL from `nemoclaw status` (may already be running)
@@ -371,6 +371,28 @@ export async function getOpenClawUrl(sandboxName: string): Promise<string | null
   // Strategy 3: openshell forward + token extraction
   const forwardUrl = await tryOpenshellForward(sandboxName)
   if (forwardUrl) return forwardUrl
+
+  // Last resort: if nemoclaw connect is still running in the background,
+  // wait a bit longer and check if port 18789 started serving, then extract token.
+  console.log('[OpenClaw] All strategies failed — trying last-resort port check...')
+  const lastResortPort = '18789'
+  for (let attempt = 0; attempt < 6; attempt++) {
+    await new Promise(r => setTimeout(r, 5000))
+    try {
+      const httpCheck = await runShellAsync(
+        `curl -sf -o /dev/null -w "%{http_code}" http://127.0.0.1:${lastResortPort}/ 2>/dev/null || true`, 5000
+      )
+      const statusCode = httpCheck.stdout.trim()
+      if (statusCode && statusCode !== '000') {
+        console.log(`[OpenClaw] Last-resort: port ${lastResortPort} is now serving HTTP ${statusCode}`)
+        const token = await extractTokenFromContainer(sandboxName)
+        if (token) {
+          return `http://127.0.0.1:${lastResortPort}/#token=${token}`
+        }
+        return `http://127.0.0.1:${lastResortPort}/`
+      }
+    } catch { /* keep trying */ }
+  }
 
   console.error('[OpenClaw] All strategies failed to obtain a URL.')
   return null

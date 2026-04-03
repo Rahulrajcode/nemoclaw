@@ -16,8 +16,8 @@ const STAGE_LABELS: Record<string, string> = {
   'ollama-check': 'Checking for Ollama',
   'ollama-install': 'Installing Ollama',
   'ollama-serve': 'Starting Ollama service',
-  'model-check': 'Checking for llama3:8b model',
-  'model-pull': 'Downloading llama3:8b model',
+  'model-check': 'Checking for llama3.1:8b model',
+  'model-pull': 'Downloading llama3.1:8b model',
   'sandbox-create': 'Creating sandbox',
   'complete': 'Bootstrap complete',
   'error': 'Error'
@@ -63,7 +63,7 @@ export function renderBootstrapView(container: HTMLElement): void {
             <div class="oc-bs-step" data-stage="nemoclaw"><span class="oc-bs-dot"></span> NemoClaw CLI</div>
             <div class="oc-bs-step" data-stage="docker"><span class="oc-bs-dot"></span> Docker Desktop</div>
             <div class="oc-bs-step" data-stage="ollama"><span class="oc-bs-dot"></span> Ollama</div>
-            <div class="oc-bs-step" data-stage="model"><span class="oc-bs-dot"></span> llama3:8b model</div>
+            <div class="oc-bs-step" data-stage="model"><span class="oc-bs-dot"></span> llama3.1:8b model</div>
             <div class="oc-bs-step" data-stage="sandbox"><span class="oc-bs-dot"></span> Sandbox environment</div>
           </div>
         </div>

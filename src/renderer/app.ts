@@ -31,7 +31,7 @@ const PROVIDERS: ProviderOption[] = [
     desc: 'Use pre-installed Ollama for local inference — no API key needed',
     badge: 'Pre-installed',
     keyUrl: '',
-    model: 'llama3:8b', // Changed to a much smaller model (4.7 GB instead of 24 GB) for faster install/testing
+    model: 'llama3.1:8b', // llama3.1 supports tool calling needed for OpenClaw agents
     noApiKey: true
   },
   {

@@ -8,7 +8,7 @@ import type { AppConfig } from '../shared/types'
 export function renderDashboard(container: HTMLElement, config: AppConfig | null): void {
   const sandboxName = config?.sandboxName || 'open-coot-default'
   const provider = config?.provider || 'ollama'
-  const model = config?.model || 'llama3:8b'
+  const model = config?.model || 'llama3.1:8b'
   const selectedMicroapps = config?.microapps || []
 
   container.innerHTML = `

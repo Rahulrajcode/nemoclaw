@@ -3,7 +3,7 @@ import { join } from 'path'
 import { registerIpcHandlers } from './ipc-handlers'
 import { registerConfigHandlers, isFirstLaunch, getConfig, saveConfig } from './config-service'
 import { runMacBootstrap } from './mac-bootstrap'
-import { getOpenClawUrl } from './openclaw-service'
+import { getOpenClawUrl, extractTokenFromContainer } from './openclaw-service'
 
 let mainWindow: BrowserWindow | null = null
 
@@ -83,10 +83,21 @@ app.whenReady().then(async () => {
           } else if (mainWindow) {
             mainWindow.webContents.send('startup-error', 'OpenClaw service failed to start or respond.')
           }
-        }).catch(err => {
+        }).catch(async (err) => {
           console.error('[Main] Error starting OpenClaw:', err)
           if (savedUrl && mainWindow) {
             console.log('[Main] Discovery failed, trying saved URL as fallback...')
+            // If the saved URL has no token, try to extract one
+            if (!savedUrl.includes('#token=')) {
+              const token = await extractTokenFromContainer(sandboxName)
+              if (token) {
+                const tokenizedUrl = savedUrl.replace(/\/?$/, '/#token=' + token)
+                console.log('[Main] Refreshed token for saved URL')
+                saveConfig({ openclawUrl: tokenizedUrl })
+                mainWindow.loadURL(tokenizedUrl)
+                return
+              }
+            }
             mainWindow.loadURL(savedUrl)
           } else {
             mainWindow?.webContents.send('startup-error', (err as Error).message)
