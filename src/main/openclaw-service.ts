@@ -118,11 +118,13 @@ function tryNemoclawConnect(sandboxName: string, timeoutMs = 60000): Promise<str
       connectionProcess = null
     }
 
-    const cmd = `${PATH_PREFIX} && nemoclaw ${sandboxName} connect`
-    console.log(`[OpenClaw Strategy 1] Spawning: ${cmd}`)
+    const innerCmd = `${PATH_PREFIX} && nemoclaw ${sandboxName} connect`
+    // Wrap in `script` to force a pseudo-TTY — nemoclaw suppresses URL output without a TTY
+    const cmd = `script -q /dev/null bash -l -c '${innerCmd}'`
+    console.log(`[OpenClaw Strategy 1] Spawning (with PTY): ${innerCmd}`)
     console.log(`[OpenClaw Strategy 1] Waiting up to ${timeoutMs / 1000}s for URL...`)
 
-    connectionProcess = spawn('bash', ['-l', '-c', cmd], { env: process.env })
+    connectionProcess = spawn('bash', ['-c', cmd], { env: process.env })
     connectionProcess.stdin?.end()
 
     let resolved = false
@@ -206,7 +208,7 @@ async function tryOpenshellForward(sandboxName: string): Promise<string | null> 
     // Start a fresh forward (stale ones were cleaned up in pre-flight)
     console.log('[OpenClaw Strategy 3] Starting forward...')
     const startResult = await runShellAsync(
-      `${PATH_PREFIX} && openshell forward start 18789 ${sandboxName}`, 15000
+      `${PATH_PREFIX} && openshell forward start 18789 ${sandboxName}`, 30000
     )
     console.log(`[OpenClaw Strategy 3] Forward start stdout: ${startResult.stdout}`)
     console.log(`[OpenClaw Strategy 3] Forward start stderr: ${startResult.stderr}`)
