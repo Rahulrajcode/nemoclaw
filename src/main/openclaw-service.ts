@@ -51,7 +51,7 @@ function runShellAsync(cmd: string, timeoutMs = 30000): Promise<{ code: number; 
 /**
  * Pre-flight: make sure Docker is running and the sandbox is alive.
  */
-async function ensureServicesRunning(sandboxName: string): Promise<void> {
+async function ensureServicesRunning(_sandboxName: string): Promise<void> {
   // 1. Check Docker
   console.log('[OpenClaw Preflight] Checking Docker...')
   try {
@@ -87,99 +87,110 @@ async function ensureServicesRunning(sandboxName: string): Promise<void> {
     } catch { /* ignore */ }
   }
 
-  // 3. Log sandbox status (non-blocking)
-  console.log('[OpenClaw Preflight] Checking sandbox status...')
+  // 3. Stop any stale openshell forwards so connect can start fresh
+  console.log('[OpenClaw Preflight] Cleaning up stale forwards...')
   try {
-    const status = runCmd(`${PATH_PREFIX} && nemoclaw ${sandboxName} status`)
-    console.log(`[OpenClaw Preflight] Sandbox status:\n${status}`)
-  } catch (err) {
-    console.warn(`[OpenClaw Preflight] Could not get sandbox status: ${(err as Error).message}`)
+    const listResult = await runShellAsync(`${PATH_PREFIX} && openshell forward list`, 10000)
+    // Parse space-separated table: SANDBOX BIND PORT PID STATUS
+    const lines = listResult.stdout.split('\n').filter(l => l.trim() && !l.startsWith('SANDBOX'))
+    for (const line of lines) {
+      const cols = line.trim().split(/\s+/)
+      if (cols.length >= 3) {
+        const fwdSandbox = cols[0]
+        const fwdPort = cols[2]
+        console.log(`[OpenClaw Preflight] Stopping stale forward on port ${fwdPort} for ${fwdSandbox}`)
+        try {
+          await runShellAsync(`${PATH_PREFIX} && openshell forward stop ${fwdPort} ${fwdSandbox}`, 5000)
+        } catch { /* ignore */ }
+      }
+    }
+  } catch {
+    console.log('[OpenClaw Preflight] No forwards to clean up')
   }
 }
 
-// ── Strategy 1: Parse URL from `nemoclaw <sandbox> status` output ──────────
+// ── Strategy 1: `nemoclaw connect` — the primary way to start the UI ─────
+
+function tryNemoclawConnect(sandboxName: string, timeoutMs = 60000): Promise<string | null> {
+  return new Promise((resolve) => {
+    if (connectionProcess) {
+      connectionProcess.kill()
+      connectionProcess = null
+    }
+
+    const cmd = `${PATH_PREFIX} && nemoclaw ${sandboxName} connect`
+    console.log(`[OpenClaw Strategy 1] Spawning: ${cmd}`)
+    console.log(`[OpenClaw Strategy 1] Waiting up to ${timeoutMs / 1000}s for URL...`)
+
+    connectionProcess = spawn('bash', ['-l', '-c', cmd], { env: process.env })
+    connectionProcess.stdin?.end()
+
+    let resolved = false
+    let allOutput = ''
+
+    const timeout = setTimeout(() => {
+      if (!resolved) {
+        resolved = true
+        console.log(`[OpenClaw Strategy 1] Timed out after ${timeoutMs / 1000}s`)
+        console.log(`[OpenClaw Strategy 1] Collected output:\n${allOutput}`)
+        // Don't kill the process — let it keep running in background,
+        // it may still be starting up and we can try other strategies
+        resolve(null)
+      }
+    }, timeoutMs)
+
+    function handleOutput(data: Buffer, streamName: string): void {
+      const text = data.toString()
+      allOutput += text
+      console.log(`[OpenClaw Strategy 1 ${streamName}] ${text.trim()}`)
+      if (resolved) return
+
+      const match = text.match(TOKEN_URL_RE)
+      if (match) {
+        resolved = true
+        clearTimeout(timeout)
+        console.log(`[OpenClaw Strategy 1] Found URL: ${match[1]}`)
+        resolve(match[1])
+      }
+    }
+
+    connectionProcess.stdout?.on('data', (d) => handleOutput(d, 'stdout'))
+    connectionProcess.stderr?.on('data', (d) => handleOutput(d, 'stderr'))
+
+    connectionProcess.on('close', (code) => {
+      console.log(`[OpenClaw Strategy 1] Process exited with code ${code}`)
+      if (!resolved) {
+        resolved = true
+        clearTimeout(timeout)
+        resolve(null)
+      }
+    })
+
+    connectionProcess.on('error', (err) => {
+      console.warn(`[OpenClaw Strategy 1] Error: ${err.message}`)
+      if (!resolved) {
+        resolved = true
+        clearTimeout(timeout)
+        resolve(null)
+      }
+    })
+  })
+}
+
+// ── Strategy 2: Parse URL from `nemoclaw <sandbox> status` output ────────
 
 async function tryStatusUrl(sandboxName: string): Promise<string | null> {
-  console.log('[OpenClaw Strategy 1] Trying nemoclaw status for URL...')
+  console.log('[OpenClaw Strategy 2] Trying nemoclaw status for URL...')
   try {
     const result = await runShellAsync(`${PATH_PREFIX} && nemoclaw ${sandboxName} status`, 15000)
     const combined = result.stdout + '\n' + result.stderr
-    console.log(`[OpenClaw Strategy 1] Status output:\n${combined}`)
 
     const match = combined.match(TOKEN_URL_RE)
     if (match) {
-      console.log(`[OpenClaw Strategy 1] Found URL in status: ${match[1]}`)
+      console.log(`[OpenClaw Strategy 2] Found URL in status: ${match[1]}`)
       return match[1]
     }
-    console.log('[OpenClaw Strategy 1] No tokenized URL found in status output.')
-    return null
-  } catch (err) {
-    console.warn(`[OpenClaw Strategy 1] Failed: ${(err as Error).message}`)
-    return null
-  }
-}
-
-// ── Strategy 2: openshell forward + Docker token extraction ────────────────
-
-async function tryOpenshellForward(sandboxName: string): Promise<string | null> {
-  console.log('[OpenClaw Strategy 2] Trying openshell forward + Docker token...')
-  try {
-    // Check if a forward is already active
-    const listResult = await runShellAsync(
-      `${PATH_PREFIX} && openshell forward list`, 10000
-    )
-    console.log(`[OpenClaw Strategy 2] Forward list stdout: ${listResult.stdout}`)
-    console.log(`[OpenClaw Strategy 2] Forward list stderr: ${listResult.stderr}`)
-
-    // Look for a URL in the forward list output
-    const listCombined = listResult.stdout + '\n' + listResult.stderr
-    const listMatch = listCombined.match(TOKEN_URL_RE)
-    if (listMatch) {
-      console.log(`[OpenClaw Strategy 2] Found URL in forward list: ${listMatch[1]}`)
-      return listMatch[1]
-    }
-
-    // Try to extract port from forward list (look for port numbers)
-    const portMatch = listCombined.match(/(?:localhost|127\.0\.0\.1):(\d{4,5})/)
-    let port = portMatch ? portMatch[1] : null
-
-    // If no active forward, start one
-    if (!port) {
-      console.log('[OpenClaw Strategy 2] No active forward found, starting one...')
-      const startResult = await runShellAsync(
-        `${PATH_PREFIX} && openshell forward start 18789 ${sandboxName}`, 15000
-      )
-      console.log(`[OpenClaw Strategy 2] Forward start stdout: ${startResult.stdout}`)
-      console.log(`[OpenClaw Strategy 2] Forward start stderr: ${startResult.stderr}`)
-
-      const startCombined = startResult.stdout + '\n' + startResult.stderr
-
-      // Check for URL in start output
-      const startUrlMatch = startCombined.match(TOKEN_URL_RE)
-      if (startUrlMatch) {
-        console.log(`[OpenClaw Strategy 2] Found URL in forward start: ${startUrlMatch[1]}`)
-        return startUrlMatch[1]
-      }
-
-      const startPortMatch = startCombined.match(/(?:localhost|127\.0\.0\.1):(\d{4,5})/)
-      port = startPortMatch ? startPortMatch[1] : '18789'
-    }
-
-    // Now try to extract the token from the Docker container
-    const token = await extractTokenFromContainer(sandboxName)
-    if (token && port) {
-      const url = `http://127.0.0.1:${port}/#token=${token}`
-      console.log(`[OpenClaw Strategy 2] Constructed URL: ${url}`)
-      return url
-    }
-
-    // If we have a port but no token, return the base URL as fallback
-    if (port) {
-      const url = `http://127.0.0.1:${port}/`
-      console.log(`[OpenClaw Strategy 2] No token found, using base URL: ${url}`)
-      return url
-    }
-
+    console.log('[OpenClaw Strategy 2] No tokenized URL found in status output.')
     return null
   } catch (err) {
     console.warn(`[OpenClaw Strategy 2] Failed: ${(err as Error).message}`)
@@ -187,15 +198,64 @@ async function tryOpenshellForward(sandboxName: string): Promise<string | null> 
   }
 }
 
+// ── Strategy 3: openshell forward + Docker token extraction ──────────────
+
+async function tryOpenshellForward(sandboxName: string): Promise<string | null> {
+  console.log('[OpenClaw Strategy 3] Trying openshell forward + Docker token...')
+  try {
+    // Start a fresh forward (stale ones were cleaned up in pre-flight)
+    console.log('[OpenClaw Strategy 3] Starting forward...')
+    const startResult = await runShellAsync(
+      `${PATH_PREFIX} && openshell forward start 18789 ${sandboxName}`, 15000
+    )
+    console.log(`[OpenClaw Strategy 3] Forward start stdout: ${startResult.stdout}`)
+    console.log(`[OpenClaw Strategy 3] Forward start stderr: ${startResult.stderr}`)
+
+    const startCombined = startResult.stdout + '\n' + startResult.stderr
+
+    // Check for tokenized URL in start output
+    const startUrlMatch = startCombined.match(TOKEN_URL_RE)
+    if (startUrlMatch) {
+      console.log(`[OpenClaw Strategy 3] Found URL in forward start: ${startUrlMatch[1]}`)
+      return startUrlMatch[1]
+    }
+
+    // Forward started but no token in output — try to extract token from Docker
+    const token = await extractTokenFromContainer(sandboxName)
+    if (token) {
+      const url = `http://127.0.0.1:18789/#token=${token}`
+      console.log(`[OpenClaw Strategy 3] Constructed URL: ${url}`)
+      return url
+    }
+
+    // Check if the forward is actually serving HTTP before returning base URL
+    console.log('[OpenClaw Strategy 3] No token found, testing if port 18789 serves HTTP...')
+    try {
+      const httpCheck = await runShellAsync(
+        'curl -sf -o /dev/null -w "%{http_code}" http://127.0.0.1:18789/ 2>/dev/null || true', 5000
+      )
+      const statusCode = httpCheck.stdout.trim()
+      console.log(`[OpenClaw Strategy 3] HTTP check returned: ${statusCode}`)
+      if (statusCode && statusCode !== '000') {
+        return 'http://127.0.0.1:18789/'
+      }
+    } catch { /* ignore */ }
+
+    console.log('[OpenClaw Strategy 3] Forward port not serving HTTP.')
+    return null
+  } catch (err) {
+    console.warn(`[OpenClaw Strategy 3] Failed: ${(err as Error).message}`)
+    return null
+  }
+}
+
 /**
  * Try to extract the OpenClaw authentication token from the sandbox Docker container.
- * Checks environment variables and common config file locations.
  */
 async function extractTokenFromContainer(sandboxName: string): Promise<string | null> {
   console.log('[OpenClaw Token] Attempting to extract token from container...')
 
-  // Find the container name/id
-  const containerPatterns = [sandboxName, `openclaw`, `nemoclaw`, `open-coot`]
+  const containerPatterns = [sandboxName, 'openclaw', 'nemoclaw', 'open-coot']
 
   for (const pattern of containerPatterns) {
     try {
@@ -212,7 +272,6 @@ async function extractTokenFromContainer(sandboxName: string): Promise<string | 
         const envResult = await runShellAsync(
           `docker exec ${containerId} env 2>/dev/null`, 5000
         )
-        // Look for common token env var patterns
         const tokenPatterns = [
           /(?:OPENCLAW_TOKEN|TOKEN|JUPYTER_TOKEN|AUTH_TOKEN)=([a-fA-F0-9]+)/,
           /(?:NOTEBOOK_TOKEN|ACCESS_TOKEN)=([a-fA-F0-9]+)/
@@ -220,75 +279,42 @@ async function extractTokenFromContainer(sandboxName: string): Promise<string | 
         for (const re of tokenPatterns) {
           const m = envResult.stdout.match(re)
           if (m) {
-            console.log(`[OpenClaw Token] Found token in env var`)
+            console.log('[OpenClaw Token] Found token in env var')
             return m[1]
           }
         }
       } catch { /* container might not support exec */ }
 
-      // Method B: Check common config file locations inside the container
-      const configPaths = [
-        '/root/.openclaw/config.json',
-        '/home/openclaw/.openclaw/config.json',
-        '/app/config.json',
-        '/etc/openclaw/config.json'
-      ]
-      for (const path of configPaths) {
-        try {
-          const catResult = await runShellAsync(
-            `docker exec ${containerId} cat ${path} 2>/dev/null`, 5000
-          )
-          if (catResult.stdout.trim()) {
-            const tokenMatch = catResult.stdout.match(/"token"\s*:\s*"([a-fA-F0-9]+)"/)
-            if (tokenMatch) {
-              console.log(`[OpenClaw Token] Found token in ${path}`)
-              return tokenMatch[1]
-            }
-          }
-        } catch { /* file doesn't exist */ }
-      }
-
-      // Method C: Check docker logs for the token URL
+      // Method B: Check docker logs for the token URL
       try {
         const logsResult = await runShellAsync(
           `docker logs --tail 100 ${containerId} 2>&1`, 10000
         )
         const urlMatch = logsResult.stdout.match(TOKEN_URL_RE)
         if (urlMatch) {
-          // Extract just the token from the URL
           const tokenFromUrl = urlMatch[1].match(/#token=([a-fA-F0-9]+)/)
           if (tokenFromUrl) {
-            console.log(`[OpenClaw Token] Found token in container logs`)
+            console.log('[OpenClaw Token] Found token in container logs')
             return tokenFromUrl[1]
           }
         }
       } catch { /* logs might not be available */ }
 
-      // Method D: Check for port mapping from this container
-      try {
-        const portResult = await runShellAsync(
-          `docker port ${containerId}`, 5000
-        )
-        console.log(`[OpenClaw Token] Container port mapping: ${portResult.stdout.trim()}`)
-      } catch { /* ignore */ }
-
     } catch { /* container pattern not found */ }
   }
 
-  // Method E: Check host-side NemoClaw config files for the token
+  // Method C: Check host-side NemoClaw config files for the token
   const hostPaths = [
     '$HOME/.nemoclaw/tokens.json',
     '$HOME/.nemoclaw/sandboxes.json',
     `$HOME/.nemoclaw/${sandboxName}/config.json`,
     '$HOME/.config/nemoclaw/config.json',
-    `$HOME/.config/nemoclaw/${sandboxName}.json`,
-    '$HOME/.nemoclaw/credentials.json'
+    `$HOME/.config/nemoclaw/${sandboxName}.json`
   ]
   for (const path of hostPaths) {
     try {
       const catResult = await runShellAsync(`cat ${path} 2>/dev/null`, 3000)
       if (catResult.stdout.trim()) {
-        console.log(`[OpenClaw Token] Found host config: ${path} -> ${catResult.stdout.substring(0, 200)}`)
         const tokenMatch = catResult.stdout.match(/"token"\s*:\s*"([a-fA-F0-9]+)"/)
         if (tokenMatch) {
           console.log(`[OpenClaw Token] Found token in ${path}`)
@@ -302,145 +328,16 @@ async function extractTokenFromContainer(sandboxName: string): Promise<string | 
   return null
 }
 
-// ── Strategy 3: nemoclaw connect (improved, last resort) ───────────────────
-
-function tryNemoclawConnect(sandboxName: string): Promise<string | null> {
-  return new Promise((resolve) => {
-    if (connectionProcess) {
-      connectionProcess.kill()
-      connectionProcess = null
-    }
-
-    const cmd = `${PATH_PREFIX} && nemoclaw ${sandboxName} connect`
-    console.log(`[OpenClaw Strategy 3] Spawning: ${cmd}`)
-
-    // Try WITHOUT the `script` PTY wrapper first — it may be causing the exit code 1.
-    // Some CLIs fail when `script` closes stdin or when the PTY behaves unexpectedly.
-    connectionProcess = spawn('bash', ['-l', '-c', cmd], { env: process.env })
-    connectionProcess.stdin?.end()
-
-    let resolved = false
-
-    const timeout = setTimeout(() => {
-      if (!resolved) {
-        resolved = true
-        connectionProcess?.kill()
-        connectionProcess = null
-        console.log('[OpenClaw Strategy 3] Timed out after 20s')
-        resolve(null)
-      }
-    }, 20000)
-
-    function handleOutput(data: Buffer, streamName: string): void {
-      const text = data.toString()
-      console.log(`[OpenClaw Strategy 3 ${streamName}] ${text.trim()}`)
-      if (resolved) return
-
-      const match = text.match(TOKEN_URL_RE)
-      if (match) {
-        resolved = true
-        clearTimeout(timeout)
-        console.log(`[OpenClaw Strategy 3] Found URL: ${match[1]}`)
-        resolve(match[1])
-      }
-    }
-
-    connectionProcess.stdout?.on('data', (d) => handleOutput(d, 'stdout'))
-    connectionProcess.stderr?.on('data', (d) => handleOutput(d, 'stderr'))
-
-    connectionProcess.on('close', (code) => {
-      console.log(`[OpenClaw Strategy 3] Process exited with code ${code}`)
-      if (!resolved) {
-        resolved = true
-        clearTimeout(timeout)
-        resolve(null)
-      }
-    })
-
-    connectionProcess.on('error', (err) => {
-      console.warn(`[OpenClaw Strategy 3] Error: ${err.message}`)
-      if (!resolved) {
-        resolved = true
-        clearTimeout(timeout)
-        resolve(null)
-      }
-    })
-  })
-}
-
-// ── Strategy 4: Docker logs + port mapping (no nemoclaw CLI needed) ────────
-
-async function tryDockerDirect(sandboxName: string): Promise<string | null> {
-  console.log('[OpenClaw Strategy 4] Trying direct Docker container inspection...')
-  try {
-    // Find containers related to this sandbox
-    const psResult = await runShellAsync(
-      `docker ps --format "{{.ID}}\\t{{.Names}}\\t{{.Ports}}"`, 5000
-    )
-    console.log(`[OpenClaw Strategy 4] Docker ps:\n${psResult.stdout}`)
-
-    const lines = psResult.stdout.split('\n').filter(l => l.trim())
-    for (const line of lines) {
-      const lowerLine = line.toLowerCase()
-      if (lowerLine.includes(sandboxName) || lowerLine.includes('openclaw') ||
-          lowerLine.includes('nemoclaw') || lowerLine.includes('open-coot')) {
-
-        const parts = line.split('\t')
-        const containerId = parts[0]
-
-        // Extract host port from the ports column (e.g., "0.0.0.0:18789->8080/tcp")
-        // Skip known non-HTTP container ports (gRPC, etc.)
-        const portsCol = parts[2] || ''
-        const NON_HTTP_CONTAINER_PORTS = ['30051', '50051', '9090']
-        const allPortMappings = [...portsCol.matchAll(/0\.0\.0\.0:(\d+)->(\d+)\/tcp/g)]
-        // Prefer mappings where the container port is HTTP-like, skip gRPC ports
-        const httpMapping = allPortMappings.find(m => !NON_HTTP_CONTAINER_PORTS.includes(m[2]))
-          || allPortMappings.find(m => !m) // no fallback — if all are non-HTTP, skip
-        const port = httpMapping ? httpMapping[1] : null
-
-        if (!port) continue
-
-        console.log(`[OpenClaw Strategy 4] Found container ${containerId} on port ${port}`)
-
-        // Get token from container logs
-        const logsResult = await runShellAsync(
-          `docker logs --tail 200 ${containerId} 2>&1`, 10000
-        )
-        const urlMatch = logsResult.stdout.match(TOKEN_URL_RE)
-        if (urlMatch) {
-          // Replace the port in the URL with our mapped port if different
-          console.log(`[OpenClaw Strategy 4] Found URL in logs: ${urlMatch[1]}`)
-          return urlMatch[1]
-        }
-
-        // Try token from env
-        const envResult = await runShellAsync(`docker exec ${containerId} env 2>/dev/null`, 5000)
-        const tokenEnvMatch = envResult.stdout.match(/(?:TOKEN|JUPYTER_TOKEN|AUTH_TOKEN)=([a-fA-F0-9]+)/)
-        if (tokenEnvMatch) {
-          const url = `http://127.0.0.1:${port}/#token=${tokenEnvMatch[1]}`
-          console.log(`[OpenClaw Strategy 4] Constructed URL from env: ${url}`)
-          return url
-        }
-
-        // Fallback: just the base URL (might work if auth is disabled)
-        console.log(`[OpenClaw Strategy 4] No token found, returning base URL on port ${port}`)
-        return `http://127.0.0.1:${port}/`
-      }
-    }
-
-    console.log('[OpenClaw Strategy 4] No matching container found.')
-    return null
-  } catch (err) {
-    console.warn(`[OpenClaw Strategy 4] Failed: ${(err as Error).message}`)
-    return null
-  }
-}
-
-// ── Main export ────────────────────────────────────────────────────────────
+// ── Main export ──────────────────────────────────────────────────────────
 
 /**
- * Full startup sequence: pre-flight checks, then try multiple strategies
+ * Full startup sequence: pre-flight checks, then try strategies
  * to obtain the OpenClaw URL. Returns the URL or null on failure.
+ *
+ * Strategy order:
+ *   1. `nemoclaw connect` — the actual command that starts the web UI (60s timeout)
+ *   2. `nemoclaw status` — may have the URL if already running
+ *   3. `openshell forward` — port-forward + token extraction
  */
 export async function getOpenClawUrl(sandboxName: string): Promise<string | null> {
   try {
@@ -450,28 +347,18 @@ export async function getOpenClawUrl(sandboxName: string): Promise<string | null
     return null
   }
 
-  // Strategy 1: Parse URL from `nemoclaw status`
-  const statusUrl = await tryStatusUrl(sandboxName)
-  if (statusUrl && TOKEN_URL_RE.test(statusUrl)) return statusUrl
-
-  // Strategy 2: openshell forward + token extraction from Docker
-  const forwardUrl = await tryOpenshellForward(sandboxName)
-  if (forwardUrl && TOKEN_URL_RE.test(forwardUrl)) return forwardUrl
-
-  // If Strategy 2 got a forwarded port URL (even without token), prefer it over
-  // Docker direct — the forward is the correct HTTP entry point, while Docker
-  // port mappings may expose gRPC or other non-HTTP services.
-  if (forwardUrl) return forwardUrl
-
-  // Strategy 3: nemoclaw connect (improved — no PTY wrapper)
-  const connectUrl = await tryNemoclawConnect(sandboxName)
+  // Strategy 1: nemoclaw connect — this is the primary command that boots the
+  // web UI inside the sandbox and prints the tokenized URL. Give it 60s.
+  const connectUrl = await tryNemoclawConnect(sandboxName, 60000)
   if (connectUrl) return connectUrl
 
-  // Strategy 4: Direct Docker inspection (logs + port mapping)
-  const dockerUrl = await tryDockerDirect(sandboxName)
-  if (dockerUrl) return dockerUrl
-
+  // Strategy 2: Parse URL from `nemoclaw status` (may already be running)
+  const statusUrl = await tryStatusUrl(sandboxName)
   if (statusUrl) return statusUrl
+
+  // Strategy 3: openshell forward + token extraction
+  const forwardUrl = await tryOpenshellForward(sandboxName)
+  if (forwardUrl) return forwardUrl
 
   console.error('[OpenClaw] All strategies failed to obtain a URL.')
   return null

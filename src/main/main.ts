@@ -68,29 +68,29 @@ app.whenReady().then(async () => {
       const sandboxName = config?.sandboxName || 'open-coot-default'
       const savedUrl = config?.openclawUrl
       
-      // Always discover the URL fresh — saved URLs can go stale (port changes,
-      // token rotation, wrong port from previous bugs).
-      console.log('[Main] Discovering OpenClaw URL...')
-      if (savedUrl) {
-        console.log(`[Main] (saved URL was: ${savedUrl})`)
-      }
-      getOpenClawUrl(sandboxName).then((url) => {
-        const finalUrl = url || savedUrl
-        if (finalUrl && mainWindow) {
-          saveConfig({ openclawUrl: finalUrl })
-          mainWindow.loadURL(finalUrl)
-        } else if (mainWindow) {
-          mainWindow.webContents.send('startup-error', 'OpenClaw service failed to start or respond.')
+      // Wait for renderer to load, then discover the URL fresh
+      mainWindow.webContents.on('did-finish-load', () => {
+        console.log('[Main] Discovering OpenClaw URL...')
+        if (savedUrl) {
+          console.log(`[Main] (saved URL was: ${savedUrl})`)
         }
-      }).catch(err => {
-        console.error('[Main] Error starting OpenClaw:', err)
-        // Fall back to saved URL if discovery fails entirely
-        if (savedUrl && mainWindow) {
-          console.log('[Main] Discovery failed, trying saved URL as fallback...')
-          mainWindow.loadURL(savedUrl)
-        } else {
-          mainWindow?.webContents.send('startup-error', (err as Error).message)
-        }
+        getOpenClawUrl(sandboxName).then((url) => {
+          const finalUrl = url || savedUrl
+          if (finalUrl && mainWindow) {
+            saveConfig({ openclawUrl: finalUrl })
+            mainWindow.loadURL(finalUrl)
+          } else if (mainWindow) {
+            mainWindow.webContents.send('startup-error', 'OpenClaw service failed to start or respond.')
+          }
+        }).catch(err => {
+          console.error('[Main] Error starting OpenClaw:', err)
+          if (savedUrl && mainWindow) {
+            console.log('[Main] Discovery failed, trying saved URL as fallback...')
+            mainWindow.loadURL(savedUrl)
+          } else {
+            mainWindow?.webContents.send('startup-error', (err as Error).message)
+          }
+        })
       })
     }
   }
