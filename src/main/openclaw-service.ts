@@ -126,7 +126,7 @@ async function tryOpenshellForward(sandboxName: string): Promise<string | null> 
   try {
     // Check if a forward is already active
     const listResult = await runShellAsync(
-      `${PATH_PREFIX} && openshell forward list ${sandboxName}`, 10000
+      `${PATH_PREFIX} && openshell forward list`, 10000
     )
     console.log(`[OpenClaw Strategy 2] Forward list stdout: ${listResult.stdout}`)
     console.log(`[OpenClaw Strategy 2] Forward list stderr: ${listResult.stderr}`)
@@ -389,9 +389,14 @@ async function tryDockerDirect(sandboxName: string): Promise<string | null> {
         const containerId = parts[0]
 
         // Extract host port from the ports column (e.g., "0.0.0.0:18789->8080/tcp")
+        // Skip known non-HTTP container ports (gRPC, etc.)
         const portsCol = parts[2] || ''
-        const hostPortMatch = portsCol.match(/0\.0\.0\.0:(\d+)->/)
-        const port = hostPortMatch ? hostPortMatch[1] : null
+        const NON_HTTP_CONTAINER_PORTS = ['30051', '50051', '9090']
+        const allPortMappings = [...portsCol.matchAll(/0\.0\.0\.0:(\d+)->(\d+)\/tcp/g)]
+        // Prefer mappings where the container port is HTTP-like, skip gRPC ports
+        const httpMapping = allPortMappings.find(m => !NON_HTTP_CONTAINER_PORTS.includes(m[2]))
+          || allPortMappings.find(m => !m) // no fallback — if all are non-HTTP, skip
+        const port = httpMapping ? httpMapping[1] : null
 
         if (!port) continue
 
@@ -453,6 +458,11 @@ export async function getOpenClawUrl(sandboxName: string): Promise<string | null
   const forwardUrl = await tryOpenshellForward(sandboxName)
   if (forwardUrl && TOKEN_URL_RE.test(forwardUrl)) return forwardUrl
 
+  // If Strategy 2 got a forwarded port URL (even without token), prefer it over
+  // Docker direct — the forward is the correct HTTP entry point, while Docker
+  // port mappings may expose gRPC or other non-HTTP services.
+  if (forwardUrl) return forwardUrl
+
   // Strategy 3: nemoclaw connect (improved — no PTY wrapper)
   const connectUrl = await tryNemoclawConnect(sandboxName)
   if (connectUrl) return connectUrl
@@ -461,8 +471,6 @@ export async function getOpenClawUrl(sandboxName: string): Promise<string | null
   const dockerUrl = await tryDockerDirect(sandboxName)
   if (dockerUrl) return dockerUrl
 
-  // If Strategy 2 returned a non-token URL (base URL), use it as last resort
-  if (forwardUrl) return forwardUrl
   if (statusUrl) return statusUrl
 
   console.error('[OpenClaw] All strategies failed to obtain a URL.')
